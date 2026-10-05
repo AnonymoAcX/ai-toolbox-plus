@@ -35,6 +35,7 @@ const MODULE_NAMES: Record<string, string> = {
   zcode: 'ZCode',
   pi: 'Pi',
   oh_my_pi: 'omp',
+  omo_native: 'omo',
   hermes: 'Hermes',
   dsh: 'dsh',
 };
@@ -52,6 +53,7 @@ const MODULE_COLORS: Record<string, string> = {
   zcode: 'volcano',
   pi: 'magenta',
   oh_my_pi: 'magenta',
+  omo_native: 'gold',
   hermes: 'volcano',
   dsh: 'red',
 };
@@ -72,11 +74,12 @@ const MODULE_TO_TAB: Record<string, string> = {
   zcode: 'zcode',
   pi: 'pi',
   oh_my_pi: 'oh_my_pi',
+  omo_native: 'omo_native',
   hermes: 'hermes',
   dsh: 'dsh',
 };
 
-const ALL_MODULE_KEYS = ['opencode', 'claude', 'codex', 'grok', 'kimi', 'geminicli', 'antigravity', 'zcode', 'openclaw', 'pi', 'oh_my_pi', 'hermes', 'dsh'];
+const ALL_MODULE_KEYS = ['opencode', 'claude', 'codex', 'grok', 'kimi', 'geminicli', 'antigravity', 'zcode', 'openclaw', 'pi', 'oh_my_pi', 'omo_native', 'hermes', 'dsh'];
 
 interface WSLSyncModalProps {
   open: boolean;

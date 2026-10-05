@@ -11,6 +11,7 @@ export type SessionTool =
   | 'opencode'
   | 'pi'
   | 'oh_my_pi'
+  | 'omo_native'
   | 'hermes'
   | 'dsh';
 
