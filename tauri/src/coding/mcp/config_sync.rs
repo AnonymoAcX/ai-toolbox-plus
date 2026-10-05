@@ -968,7 +968,10 @@ fn build_stdio_config(
         // Add timeout field if supported
         if config.supports_timeout {
             if let Some(timeout) = server.timeout {
-                result.insert("timeout".to_string(), Value::Number(timeout.into()));
+                result.insert(
+                    config.timeout_field.to_string(),
+                    Value::Number(timeout.into()),
+                );
             }
         }
 
@@ -1075,7 +1078,10 @@ fn build_http_config(
         // Add timeout field if supported
         if config.supports_timeout {
             if let Some(timeout) = server.timeout {
-                result.insert("timeout".to_string(), Value::Number(timeout.into()));
+                result.insert(
+                    config.timeout_field.to_string(),
+                    Value::Number(timeout.into()),
+                );
             }
         }
 
@@ -1552,7 +1558,13 @@ fn parse_server_with_format_config(
         // HTTP/SSE type
         let url =
             extract_remote_url_with_format_config(server_config, format_config, &server_type)?;
-        let headers = server_config.get("headers").cloned();
+        // ZCode accepts `http_headers` as an alias and its own desktop app
+        // writes that spelling, so read both or the headers would be dropped
+        // on every import.
+        let headers = server_config
+            .get("headers")
+            .or_else(|| server_config.get("http_headers"))
+            .cloned();
 
         let mut result = serde_json::json!({
             "url": url,
@@ -1576,13 +1588,26 @@ fn parse_server_with_format_config(
         user_group: None,
         user_note: None,
         tags: vec![],
-        timeout: None,
+        // Without reading the timeout back, re-importing a server that was
+        // exported from this app would silently reset it to the default.
+        timeout: read_server_timeout(server_config, format_config),
         sort_index: 0,
         management_enabled: true,
         disabled_previous_tools: Vec::new(),
         created_at: now,
         updated_at: now,
     })
+}
+
+/// Reads a server's timeout back from its format-specific field.
+fn read_server_timeout(
+    server_config: &Value,
+    format_config: &McpFormatConfig,
+) -> Option<i64> {
+    if !format_config.supports_timeout {
+        return None;
+    }
+    server_config.get(format_config.timeout_field)?.as_i64()
 }
 
 /// Parse standard server config (no format conversion needed)
@@ -2850,5 +2875,76 @@ X-Test = "yes"
             expanded.server_config["args"],
             json!(["-y", "--prefer-online", "@sammysnake/fast-context-mcp"])
         );
+    }
+
+    /// ZCode reads its timeout as `timeoutMs`. Writing the generic `timeout` key
+    /// silently drops the value, because ZCode only accepts an integer
+    /// `timeoutMs` and ignores unknown fields.
+    #[test]
+    fn zcode_writes_timeout_as_timeout_ms() {
+        let config = get_format_config("zcode").expect("zcode format config");
+        let mut server = build_http_server();
+        server.timeout = Some(90);
+
+        let built = build_json_server_config(
+            &server,
+            Some(config),
+            true,
+            "zcode",
+            false,
+        )
+        .expect("build");
+
+        assert_eq!(built["timeoutMs"], json!(90));
+        assert!(built.get("timeout").is_none(), "must not emit `timeout`");
+        assert_eq!(built["url"], json!("https://example.com/mcp"));
+        // ZCode reads `headers ?? http_headers`, so the standard key round-trips.
+        assert_eq!(built["headers"]["Authorization"], json!("Bearer token"));
+    }
+
+    /// A server exported by this app and re-imported must come back unchanged.
+    /// The importer previously dropped both the timeout and ZCode's
+    /// `http_headers` spelling, so a round trip silently reset them.
+    #[test]
+    fn zcode_import_reads_back_timeout_and_http_headers_alias() {
+        let config = get_format_config("zcode").expect("zcode format config");
+        let parsed = parse_server_config(
+            "srv",
+            &json!({
+                "type": "http",
+                "url": "https://example.com/mcp",
+                "timeoutMs": 90,
+                "http_headers": { "Authorization": "Bearer token" }
+            }),
+            Some(config),
+            0,
+        )
+        .expect("parse");
+
+        assert_eq!(parsed.timeout, Some(90));
+        assert_eq!(
+            parsed.server_config["headers"]["Authorization"],
+            json!("Bearer token")
+        );
+    }
+
+    /// Every other tool that supports a timeout keeps the generic field name.
+    #[test]
+    fn opencode_still_writes_generic_timeout() {
+        let config = get_format_config("opencode").expect("opencode format config");
+        let mut server = build_http_server();
+        server.timeout = Some(90);
+
+        let built = build_json_server_config(
+            &server,
+            Some(config),
+            true,
+            "opencode",
+            false,
+        )
+        .expect("build");
+
+        assert_eq!(built["timeout"], json!(90));
+        assert!(built.get("timeoutMs").is_none());
     }
 }

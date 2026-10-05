@@ -102,6 +102,12 @@ pub async fn reapply_applied_runtime_after_restore<R: Runtime>(
     })
     .await;
 
+    let zcode_app = app.clone();
+    reapply_cli(&mut summary, "zcode", async move {
+        reapply_zcode(&zcode_app).await
+    })
+    .await;
+
     let opencode_app = app.clone();
     reapply_cli(&mut summary, "opencode", async move {
         reapply_opencode_prompt_only(&opencode_app).await
@@ -239,6 +245,7 @@ fn wsl_module_for_reapply_label(label: &str) -> Option<&'static str> {
         "claude_desktop" => Some("claude_desktop"),
         "hermes" => Some("hermes"),
         "dsh" => Some("dsh"),
+        "zcode" => Some("zcode"),
         _ => None,
     }
 }
@@ -269,6 +276,7 @@ pub fn unchanged_wsl_modules(changed_modules: &[String]) -> Vec<String> {
         "claude_desktop",
         "hermes",
         "dsh",
+        "zcode",
     ];
 
     ALL_WSL_FILE_MODULES
@@ -758,6 +766,78 @@ async fn reapply_antigravity<R: Runtime>(app: &AppHandle<R>) -> ReapplyCliResult
             &prompt_id,
         )
         .await
+    })
+    .await;
+    result
+}
+
+async fn reapply_zcode<R: Runtime>(app: &AppHandle<R>) -> ReapplyCliResult {
+    use crate::coding::zcode;
+
+    let db_state = app.state::<SqliteDbState>();
+    let db = db_state.db();
+    let mut result = ReapplyCliResult::default();
+    let prompt_id = resolve_record_id(
+        &mut result,
+        "prompt",
+        first_applied_prompt_id(&db, DbTable::ZcodePromptConfig),
+    );
+
+    // ZCode has no single active provider: applying one means pointing
+    // `defaultModelSelection` at it. Re-project it from the database record so a
+    // registry file edited or replaced while the app was closed is restored.
+    let selection = db
+        .with_conn(|conn| {
+            crate::db::helpers::db_list(conn, DbTable::ZcodeProvider, None)
+        })
+        .ok()
+        .and_then(|providers| {
+            providers
+                .into_iter()
+                .map(zcode::adapter::from_db_value_provider)
+                .find(|provider| provider.is_applied)
+        });
+
+    if let Some(provider) = selection {
+        let mut settings =
+            serde_json::from_str::<zcode::types::ZcodeSettingsConfig>(&provider.settings_config).ok();
+        let model_id = settings.as_ref().and_then(|settings| {
+            settings
+                .models
+                .iter()
+                .find(|model| model.is_default)
+                .or(settings.models.first())
+                .map(|model| model.model_id.clone())
+        });
+        match (settings.as_mut(), model_id) {
+            (Some(settings), Some(model_id)) => {
+                let provider_id = settings.provider_id.clone();
+                let selected_provider_id = provider_id.clone();
+                apply_record(&mut result, "provider", Some(provider_id), |_| async move {
+                    // Rebuild the registry entry as well as the selection: a
+                    // registry replaced or hand-edited while the app was closed
+                    // would otherwise keep naming a missing model.
+                    zcode::commands::project_zcode_provider_internal_without_events(
+                        &db, settings,
+                    )
+                    .await?;
+                    zcode::commands::select_zcode_provider_internal_without_events(
+                        &db,
+                        &selected_provider_id,
+                        &model_id,
+                    )
+                    .await
+                })
+                .await;
+            }
+            _ => result
+                .warnings
+                .push("provider:applied provider has no models to select".to_string()),
+        }
+    }
+
+    apply_record(&mut result, "prompt", prompt_id, |prompt_id| async move {
+        zcode::commands::apply_zcode_prompt_config_internal_without_events(&db, &prompt_id).await
     })
     .await;
     result

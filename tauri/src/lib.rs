@@ -1660,6 +1660,31 @@ pub fn run() {
                     std::future::pending::<()>().await;
                 });
 
+                // ZCode sync listener
+                let app_zcode = app_handle.clone();
+                let app_zcode_clone = app_zcode.clone();
+                tauri::async_runtime::spawn(async move {
+                    let _ = app_zcode.listen("wsl-sync-request-zcode", move |_event| {
+                        let app = app_zcode_clone.clone();
+                        tauri::async_runtime::spawn(async move {
+                            let db_state = app.state::<crate::SqliteDbState>();
+                            if !coding::wsl::is_wsl_auto_sync_enabled(&db_state).await {
+                                return;
+                            }
+                            let result = coding::wsl::wsl_sync(
+                                db_state,
+                                app.clone(),
+                                Some("zcode".to_string()),
+                                None,
+                            )
+                            .await;
+                            let _ = result;
+                        });
+                    });
+
+                    std::future::pending::<()>().await;
+                });
+
                 // MCP-changed listener - triggers MCP WSL sync
                 let app_mcp = app_handle.clone();
                 let app_mcp_clone = app_mcp.clone();
@@ -2591,6 +2616,32 @@ pub fn run() {
             coding::antigravity::delete_antigravity_official_account,
             coding::antigravity::refresh_antigravity_official_account_limits,
             coding::antigravity::copy_antigravity_official_account_token,
+            // ZCode
+            coding::zcode::get_zcode_config_file_path,
+            coding::zcode::get_zcode_root_path_info,
+            coding::zcode::reveal_zcode_config_folder,
+            coding::zcode::read_zcode_settings,
+            coding::zcode::get_zcode_generation_status,
+            coding::zcode::get_zcode_common_config,
+            coding::zcode::save_zcode_common_config,
+            coding::zcode::save_zcode_provider,
+            coding::zcode::delete_zcode_provider_from_file,
+            coding::zcode::select_zcode_provider,
+            coding::zcode::list_zcode_provider_templates,
+            coding::zcode::list_zcode_providers,
+            coding::zcode::create_zcode_provider,
+            coding::zcode::update_zcode_provider,
+            coding::zcode::delete_zcode_provider,
+            coding::zcode::reorder_zcode_providers,
+            coding::zcode::toggle_zcode_provider_disabled,
+            coding::zcode::list_zcode_prompt_configs,
+            coding::zcode::create_zcode_prompt_config,
+            coding::zcode::update_zcode_prompt_config,
+            coding::zcode::delete_zcode_prompt_config,
+            coding::zcode::apply_zcode_prompt_config,
+            coding::zcode::disable_zcode_prompt_config,
+            coding::zcode::reorder_zcode_prompt_configs,
+            coding::zcode::save_zcode_local_prompt_config,
             // Pi
             coding::pi::get_pi_root_path_info,
             coding::pi::get_pi_settings_config,
