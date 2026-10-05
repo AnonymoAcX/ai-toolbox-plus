@@ -69,6 +69,7 @@ function createSettings(overrides: Partial<AppSettings> = {}): AppSettings {
       oh_my_pi: false,
       hermes: false,
       dsh: false,
+      zcode: false,
     },
     opencode_allow_clear_applied_oh_my_config: false,
     opencode_use_legacy_oh_my_config: false,

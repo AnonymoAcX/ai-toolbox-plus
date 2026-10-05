@@ -353,6 +353,29 @@ fn normalize_visible_tabs_order(tabs: Vec<String>) -> Vec<String> {
         "grok",
         "geminicli",
         "antigravity",
+        "zcode",
+        "kimi",
+        "openclaw",
+        "pi",
+        "oh_my_pi",
+        "hermes",
+        "dsh",
+        "gateway",
+        "image",
+        "ssh",
+        "wsl",
+    ];
+    // Snapshot of the default list immediately before ZCode was added. Users
+    // still on this exact default get the new tab through the full replace
+    // below; users with a custom order keep their own list untouched.
+    const PRE_ZCODE_DEFAULT_VISIBLE_TABS: &[&str] = &[
+        "opencode",
+        "claudecode",
+        "claudedesktop",
+        "codex",
+        "grok",
+        "geminicli",
+        "antigravity",
         "kimi",
         "openclaw",
         "pi",
@@ -373,6 +396,7 @@ fn normalize_visible_tabs_order(tabs: Vec<String>) -> Vec<String> {
         || string_vec_matches(&tabs, PRE_DESKTOP_DEFAULT_VISIBLE_TABS)
         || string_vec_matches(&tabs, PRE_KIMI_DEFAULT_VISIBLE_TABS)
         || string_vec_matches(&tabs, PRE_ANTIGRAVITY_DEFAULT_VISIBLE_TABS)
+        || string_vec_matches(&tabs, PRE_ZCODE_DEFAULT_VISIBLE_TABS)
     {
         return CURRENT_DEFAULT_VISIBLE_TABS
             .iter()
@@ -655,6 +679,7 @@ mod tests {
                 "grok",
                 "geminicli",
                 "antigravity",
+                "zcode",
                 "kimi",
                 "openclaw",
                 "pi",
@@ -704,6 +729,7 @@ mod tests {
                 "grok",
                 "geminicli",
                 "antigravity",
+                "zcode",
                 "kimi",
                 "openclaw",
                 "pi",
@@ -715,6 +741,72 @@ mod tests {
                 "ssh",
                 "wsl",
             ]
+        );
+    }
+
+    #[test]
+    fn visible_tabs_pre_zcode_default_is_migrated() {
+        let settings = from_db_value(json!({
+            // The historical default that predates ZCode, not the current
+            // baseline: the migration must recognize it and append the new tab.
+            "visible_tabs": [
+                "opencode",
+                "claudecode",
+                "claudedesktop",
+                "codex",
+                "grok",
+                "geminicli",
+                "antigravity",
+                "zcode",
+                "kimi",
+                "openclaw",
+                "pi",
+                "oh_my_pi",
+                "hermes",
+                "dsh",
+                "gateway",
+                "image",
+                "ssh",
+                "wsl",
+            ]
+        }));
+
+        assert_eq!(
+            settings.visible_tabs,
+            vec![
+                "opencode",
+                "claudecode",
+                "claudedesktop",
+                "codex",
+                "grok",
+                "geminicli",
+                "antigravity",
+                "zcode",
+                "kimi",
+                "openclaw",
+                "pi",
+                "oh_my_pi",
+                "hermes",
+                "dsh",
+                "gateway",
+                "image",
+                "ssh",
+                "wsl",
+            ]
+        );
+    }
+
+    #[test]
+    fn custom_visible_tabs_keep_zcode_hidden() {
+        // A user who reordered or hid tabs keeps their own list; the new tab is
+        // deliberately not force-inserted for custom orders.
+        let settings = from_db_value(json!({
+            "visible_tabs": ["codex", "opencode", "gateway"],
+        }));
+
+        assert_eq!(
+            settings.visible_tabs,
+            vec!["codex", "opencode", "gateway"]
         );
     }
 
@@ -743,6 +835,7 @@ mod tests {
                 "grok",
                 "geminicli",
                 "antigravity",
+                "zcode",
                 "kimi",
                 "openclaw",
                 "pi",
@@ -782,6 +875,7 @@ mod tests {
                 "grok",
                 "geminicli",
                 "antigravity",
+                "zcode",
                 "kimi",
                 "openclaw",
                 "pi",
@@ -852,6 +946,7 @@ mod tests {
                 "grok",
                 "geminicli",
                 "antigravity",
+                "zcode",
                 "kimi",
                 "openclaw",
                 "pi",
@@ -898,6 +993,7 @@ mod tests {
                 "grok",
                 "geminicli",
                 "antigravity",
+                "zcode",
                 "kimi",
                 "openclaw",
                 "pi",
@@ -940,6 +1036,7 @@ mod tests {
                 "grok",
                 "geminicli",
                 "antigravity",
+                "zcode",
                 "kimi",
                 "openclaw",
                 "pi",
