@@ -66,6 +66,8 @@ import {
 import { refreshTrayMenu } from '@/services/appApi';
 import { GlobalPromptSettings } from '@/features/coding/shared/prompt';
 import { SessionManagerPanel } from '@/features/coding/shared/sessionManager';
+import FetchModelsModal from '@/components/common/FetchModelsModal';
+import type { FetchModelsApplyResult } from '@/components/common/FetchModelsModal/types';
 import ProviderConnectivityTestModal, {
   buildKimiProviderConnectivityInfo,
   type ProviderConnectivityInfo,
@@ -100,6 +102,7 @@ import {
 } from '@/services/kimiApi';
 import { kimiPromptApi } from '@/services/kimiPromptApi';
 import type {
+  KimiCatalogModel,
   KimiCommonConfig,
   KimiCommonConfigInput,
   KimiDeviceAuthStartResult,
@@ -125,15 +128,29 @@ import {
 } from '@/features/coding/shared/providerList';
 import KimiCommonConfigModal from '../components/KimiCommonConfigModal';
 import KimiDeviceAuthModal from '../components/KimiDeviceAuthModal';
+import KimiModelFormModal from '../components/KimiModelFormModal';
 import KimiPluginsPanel from '../components/KimiPluginsPanel';
 import KimiProviderCard from '../components/KimiProviderCard';
 import KimiProviderFormModal from '../components/KimiProviderFormModal';
-import { extractKimiBaseUrl, KIMI_OFFICIAL_DEFAULT_MODEL_KEY } from '../utils/settingsConfig';
+import {
+  buildKimiSettingsConfig,
+  extractKimiBaseUrl,
+  KIMI_OFFICIAL_DEFAULT_MODEL_KEY,
+  KIMI_OFFICIAL_DEFAULT_MODEL_MAX_CONTEXT_SIZE,
+  parseKimiSettingsConfig,
+} from '../utils/settingsConfig';
 import { canDeleteKimiProvider } from '../utils/providerDeletion';
 import {
   buildKimiProviderSavePlan,
   shouldReengageKimiGatewayOnSave,
 } from '../utils/providerSaveFlow';
+import {
+  importModelsIntoKimiCatalog,
+  kimiCatalogRowKey,
+  removeKimiCatalogModels,
+  upsertKimiCatalogModel,
+} from '../utils/kimiCatalogModels';
+import { saveKimiProviderCatalogWithGatewayReengage } from '../utils/kimiProviderCatalogSave';
 
 const { Link, Text, Title } = Typography;
 
@@ -169,6 +186,14 @@ const KimiPage: React.FC = () => {
   const [providerModalOpen, setProviderModalOpen] = React.useState(false);
   const [editingProvider, setEditingProvider] = React.useState<KimiProvider | null>(null);
   const [isCopyMode, setIsCopyMode] = React.useState(false);
+  // Model catalog editor (single-model modal, opened from a provider card).
+  const [modelModalOpen, setModelModalOpen] = React.useState(false);
+  const [modelModalProviderId, setModelModalProviderId] = React.useState<string | null>(null);
+  const [modelModalRowKey, setModelModalRowKey] = React.useState('');
+  const [modelModalInitialValues, setModelModalInitialValues] = React.useState<KimiCatalogModel | undefined>(undefined);
+  // Fetch-models modal (pull the upstream model list into the catalog).
+  const [fetchModelsModalOpen, setFetchModelsModalOpen] = React.useState(false);
+  const [fetchModelsProviderId, setFetchModelsProviderId] = React.useState<string | null>(null);
   const [connectivityInfo, setConnectivityInfo] = React.useState<ProviderConnectivityInfo | null>(null);
   const [connectivityModalOpen, setConnectivityModalOpen] = React.useState(false);
   const [connectivityStatuses, setConnectivityStatuses] = React.useState<Record<string, ProviderConnectivityStatusItem>>({});
@@ -201,6 +226,18 @@ const KimiPage: React.FC = () => {
     return providerNeedsGatewayProxy(providerApiFormat, 'openai_chat');
   }, [gatewayCliStatus?.primary_provider_id, gatewayProviderProfilesVersion, providers]);
   const primaryGatewayProviderNeedsProxyReason = primaryGatewayProviderNeedsProxy ? 'protocol' : null;
+
+  // Alias keys of the applied provider's catalog — the options the swarm pool
+  // may reference, since a pool key must resolve to a projected [models.<key>].
+  const appliedModelAliasKeys = React.useMemo(() => {
+    const appliedProvider = providers.find((provider) => provider.id === appliedProviderId);
+    if (!appliedProvider) {
+      return [];
+    }
+    return parseKimiSettingsConfig(appliedProvider.settingsConfig)
+      .catalogModels.map((model) => model.key.trim())
+      .filter(Boolean);
+  }, [appliedProviderId, providers]);
 
   // Monotonic request id: overlapping loads (manual refresh while a silent
   // reload is in flight) must not let a stale response overwrite newer state.
@@ -308,6 +345,173 @@ const KimiPage: React.FC = () => {
     setIsCopyMode(true);
     setProviderModalOpen(true);
   };
+
+  const modelModalProvider = React.useMemo(
+    () => providers.find((provider) => provider.id === modelModalProviderId) ?? null,
+    [modelModalProviderId, providers],
+  );
+
+  const handleEditModel = (provider: KimiProvider, model?: KimiCatalogModel) => {
+    setModelModalProviderId(provider.id);
+    setModelModalRowKey(model ? kimiCatalogRowKey(model) : '');
+    setModelModalInitialValues(model);
+    setModelModalOpen(true);
+  };
+
+  /**
+   * Persist a catalog edit back onto the provider row. Catalog edits rebuild
+   * `settingsConfig`, so an applied provider needs the gateway takeover
+   * replayed around the write (the backend rejects in-takeover direct writes).
+   */
+  const persistProviderCatalog = React.useCallback(async (
+    provider: KimiProvider,
+    models: KimiCatalogModel[],
+  ) => {
+    const settings = parseKimiSettingsConfig(provider.settingsConfig);
+    // Keep `defaultModelKey` resolvable: the CLI refuses to resolve an unknown
+    // key, and the backend rejects a default with no catalog. Removing or
+    // renaming the default row must therefore re-point it (or clear it).
+    const modelKeys = models.map((model) => model.key.trim()).filter(Boolean);
+    const defaultModelKey = modelKeys.includes(settings.defaultModelKey)
+      ? settings.defaultModelKey
+      : modelKeys[0] ?? '';
+    const settingsConfig = buildKimiSettingsConfig({
+      category: provider.category,
+      apiKey: settings.apiKey,
+      baseUrl: settings.baseUrl,
+      providerKey: settings.providerKey,
+      defaultModelKey,
+      catalogModels: models,
+      customTomlConfig: settings.customTomlConfig,
+      rawObject: settings.rawObject,
+    });
+    const gatewayModeBeforeSave = resolveGatewayReengageMode(gatewayCliStatus);
+    await saveKimiProviderCatalogWithGatewayReengage({
+      provider,
+      settingsConfig,
+      gatewayMode: gatewayModeBeforeSave,
+      updateProvider: updateKimiProvider,
+      restoreDirect: () => restoreProxyGatewayCliDirect('kimi'),
+      engageSingle: () => engageProxyGatewaySingle('kimi', provider.id),
+      engageFailover: () => engageProxyGatewayFailover('kimi'),
+      onGatewayStatusChange: setGatewayCliStatus,
+    });
+    await loadConfig(true);
+    await refreshTrayMenu();
+  }, [gatewayCliStatus, loadConfig]);
+
+  const handleModelFormSubmit = React.useCallback(async (model: KimiCatalogModel) => {
+    if (!modelModalProvider) {
+      return;
+    }
+    const currentModels = parseKimiSettingsConfig(modelModalProvider.settingsConfig).catalogModels;
+    const nextModels = upsertKimiCatalogModel(currentModels, model, modelModalRowKey || undefined);
+    try {
+      await persistProviderCatalog(modelModalProvider, nextModels);
+      message.success(t('kimi.saveSuccess'));
+      setModelModalOpen(false);
+      setModelModalProviderId(null);
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : String(error));
+    }
+  }, [modelModalProvider, modelModalRowKey, persistProviderCatalog, t]);
+
+  const handleDeleteModel = React.useCallback((provider: KimiProvider, model: KimiCatalogModel) => {
+    modal.confirm({
+      title: t('kimi.model.confirmDelete', { name: model.displayName || model.key }),
+      icon: <ExclamationCircleOutlined />,
+      onOk: async () => {
+        try {
+          const currentModels = parseKimiSettingsConfig(provider.settingsConfig).catalogModels;
+          const nextModels = removeKimiCatalogModels(currentModels, [kimiCatalogRowKey(model)]);
+          await persistProviderCatalog(provider, nextModels);
+          message.success(t('kimi.deleteSuccess'));
+        } catch (error) {
+          message.error(error instanceof Error ? error.message : String(error));
+        }
+      },
+    });
+  }, [persistProviderCatalog, t, modal]);
+
+  /**
+   * Open the upstream model-list modal. Official channels authenticate through
+   * OAuth and `__local__` is a read-only bridge, so neither can be probed with
+   * a static key.
+   */
+  const handleOpenFetchModels = React.useCallback((provider: KimiProvider) => {
+    if (provider.category === 'official' || provider.id === KIMI_LOCAL_PROVIDER_ID) {
+      return;
+    }
+    setFetchModelsProviderId(provider.id);
+    setFetchModelsModalOpen(true);
+  }, []);
+
+  const fetchModelsProvider = React.useMemo(
+    () => providers.find((provider) => provider.id === fetchModelsProviderId) ?? null,
+    [fetchModelsProviderId, providers],
+  );
+
+  const fetchModelsProviderInfo = React.useMemo(() => {
+    if (!fetchModelsProvider) {
+      return null;
+    }
+    const settings = parseKimiSettingsConfig(fetchModelsProvider.settingsConfig);
+    return {
+      providerId: fetchModelsProvider.id,
+      name: fetchModelsProvider.name,
+      baseUrl: settings.baseUrl,
+      apiKey: settings.apiKey,
+      providerKey: settings.providerKey,
+      existingModelIds: settings.catalogModels.map((item) => item.model.trim()),
+    };
+  }, [fetchModelsProvider]);
+
+  const handleFetchModelsApply = React.useCallback(async (result: FetchModelsApplyResult) => {
+    if (!fetchModelsProvider || !fetchModelsProviderInfo) {
+      return;
+    }
+    try {
+      const settings = parseKimiSettingsConfig(fetchModelsProvider.settingsConfig);
+      const models = importModelsIntoKimiCatalog(
+        settings.catalogModels,
+        result.selectedModels,
+        result.removedModelIds,
+        result.orderedModelIds,
+        fetchModelsProviderInfo.providerKey,
+        KIMI_OFFICIAL_DEFAULT_MODEL_MAX_CONTEXT_SIZE,
+      );
+      await persistProviderCatalog(fetchModelsProvider, models);
+      message.success(t('common.success'));
+      setFetchModelsModalOpen(false);
+      setFetchModelsProviderId(null);
+    } catch (error) {
+      console.error('Failed to apply fetched Kimi models:', error);
+      message.error(error instanceof Error ? error.message : String(error));
+    }
+  }, [fetchModelsProvider, fetchModelsProviderInfo, persistProviderCatalog, t]);
+
+  const handleDeleteModels = React.useCallback((provider: KimiProvider, models: KimiCatalogModel[]) => {
+    modal.confirm({
+      title: t('kimi.model.batchDeleteConfirmTitle'),
+      content: t('kimi.model.batchDeleteConfirmContent', { count: models.length }),
+      icon: <ExclamationCircleOutlined />,
+      onOk: async () => {
+        try {
+          // Re-read the current catalog: the confirm is async, so a concurrent
+          // fetch/import may have changed it. Report what was actually removed
+          // rather than the count captured when the dialog opened.
+          const currentModels = parseKimiSettingsConfig(provider.settingsConfig).catalogModels;
+          const rowKeys = models.map((model) => kimiCatalogRowKey(model));
+          const nextModels = removeKimiCatalogModels(currentModels, rowKeys);
+          const removedCount = currentModels.length - nextModels.length;
+          await persistProviderCatalog(provider, nextModels);
+          message.success(t('kimi.model.batchDeleteSuccess', { count: removedCount }));
+        } catch (error) {
+          message.error(error instanceof Error ? error.message : String(error));
+        }
+      },
+    });
+  }, [persistProviderCatalog, t, modal]);
 
   const handleSaveProvider = async (values: KimiProviderInput) => {
     const plan = buildKimiProviderSavePlan(editingProvider, values, { isCopy: isCopyMode });
@@ -919,6 +1123,15 @@ const KimiPage: React.FC = () => {
                                   onSelectChange={(checked) =>
                                     providerBatch.toggleSelect(provider.id, checked)
                                   }
+                                  onEditModel={handleEditModel}
+                                  onDeleteModel={handleDeleteModel}
+                                  onDeleteModels={handleDeleteModels}
+                                  onFetchModels={handleOpenFetchModels}
+                                  canFetchModels={
+                                    provider.category !== 'official'
+                                    && provider.id !== KIMI_LOCAL_PROVIDER_ID
+                                    && Boolean(extractKimiBaseUrl(provider.settingsConfig))
+                                  }
                                 />
                               ))}
                             </div>
@@ -1067,6 +1280,45 @@ const KimiPage: React.FC = () => {
         onSubmit={handleSaveProvider}
       />
 
+      {modelModalProvider && (
+        <KimiModelFormModal
+          open={modelModalOpen}
+          isEdit={Boolean(modelModalRowKey)}
+          initialValues={modelModalInitialValues}
+          providerKey={parseKimiSettingsConfig(modelModalProvider.settingsConfig).providerKey}
+          existingKeys={parseKimiSettingsConfig(modelModalProvider.settingsConfig)
+            .catalogModels.map((model) => model.key)
+            // The edited row's own key is not a collision.
+            .filter((key) => key !== modelModalRowKey)}
+          onCancel={() => {
+            setModelModalOpen(false);
+            setModelModalProviderId(null);
+            setModelModalRowKey('');
+            setModelModalInitialValues(undefined);
+          }}
+          onSubmit={handleModelFormSubmit}
+        />
+      )}
+
+      {fetchModelsProviderInfo && (
+        <FetchModelsModal
+          open={fetchModelsModalOpen}
+          providerId={fetchModelsProviderInfo.providerId}
+          providerName={fetchModelsProviderInfo.name}
+          baseUrl={fetchModelsProviderInfo.baseUrl}
+          apiKey={fetchModelsProviderInfo.apiKey || undefined}
+          // Kimi custom providers are OpenAI-compatible (`type = "openai"`),
+          // so the models list always comes from `{base_url}/models`.
+          sdkType="@ai-sdk/openai"
+          existingModelIds={fetchModelsProviderInfo.existingModelIds}
+          onCancel={() => {
+            setFetchModelsModalOpen(false);
+            setFetchModelsProviderId(null);
+          }}
+          onSuccess={handleFetchModelsApply}
+        />
+      )}
+
       <ProviderConnectivityTestModal
         open={connectivityModalOpen}
         connectivityInfo={connectivityInfo}
@@ -1077,6 +1329,7 @@ const KimiPage: React.FC = () => {
       <KimiCommonConfigModal
         open={commonConfigModalOpen}
         config={commonConfig}
+        modelAliasKeys={appliedModelAliasKeys}
         onCancel={() => setCommonConfigModalOpen(false)}
         onSubmit={handleSaveCommonConfig}
       />

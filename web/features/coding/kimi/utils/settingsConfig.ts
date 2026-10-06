@@ -123,6 +123,9 @@ export function parseKimiSettingsConfig(rawConfig?: string | null): ParsedKimiSe
       const provider = typeof item.provider === 'string' ? item.provider.trim() : providerKey;
       const displayName = typeof item.displayName === 'string' ? item.displayName.trim() : undefined;
       const maxContextSize = typeof item.maxContextSize === 'number' ? item.maxContextSize : undefined;
+      const maxInputSize = typeof item.maxInputSize === 'number' ? item.maxInputSize : undefined;
+      const maxOutputSize = typeof item.maxOutputSize === 'number' ? item.maxOutputSize : undefined;
+      const reasoningKey = typeof item.reasoningKey === 'string' ? item.reasoningKey.trim() : undefined;
       const capabilities = Array.isArray(item.capabilities)
         ? (item.capabilities.filter((c): c is string => typeof c === 'string') as string[])
         : undefined;
@@ -130,6 +133,14 @@ export function parseKimiSettingsConfig(rawConfig?: string | null): ParsedKimiSe
         ? (item.supportEfforts.filter((e): e is string => typeof e === 'string') as string[])
         : undefined;
       const defaultEffort = typeof item.defaultEffort === 'string' ? item.defaultEffort : undefined;
+      // Per-model TOML keys this app does not model are round-tripped through
+      // `extraConfig`; they must survive parse -> edit -> build or a catalog
+      // edit would delete them from config.toml.
+      const extraConfig = item.extraConfig
+        && typeof item.extraConfig === 'object'
+        && !Array.isArray(item.extraConfig)
+        ? (item.extraConfig as Record<string, unknown>)
+        : undefined;
 
       const catalogModel: KimiCatalogModel = {
         key: key || model,
@@ -138,9 +149,13 @@ export function parseKimiSettingsConfig(rawConfig?: string | null): ParsedKimiSe
       };
       if (displayName) catalogModel.displayName = displayName;
       if (maxContextSize !== undefined) catalogModel.maxContextSize = maxContextSize;
+      if (maxInputSize !== undefined) catalogModel.maxInputSize = maxInputSize;
+      if (maxOutputSize !== undefined) catalogModel.maxOutputSize = maxOutputSize;
+      if (reasoningKey) catalogModel.reasoningKey = reasoningKey;
       if (capabilities && capabilities.length > 0) catalogModel.capabilities = capabilities;
       if (supportEfforts && supportEfforts.length > 0) catalogModel.supportEfforts = supportEfforts;
       if (defaultEffort) catalogModel.defaultEffort = defaultEffort;
+      if (extraConfig && Object.keys(extraConfig).length > 0) catalogModel.extraConfig = extraConfig;
 
       return catalogModel;
     })
@@ -190,9 +205,19 @@ export function normalizeKimiCatalogModels(
       };
       if (displayName) normalized.displayName = displayName;
       if (m.maxContextSize !== undefined) normalized.maxContextSize = m.maxContextSize;
+      if (m.maxInputSize !== undefined) normalized.maxInputSize = m.maxInputSize;
+      if (m.maxOutputSize !== undefined) normalized.maxOutputSize = m.maxOutputSize;
+      if (m.reasoningKey) normalized.reasoningKey = m.reasoningKey;
       if (m.capabilities && m.capabilities.length > 0) normalized.capabilities = m.capabilities;
       if (m.supportEfforts && m.supportEfforts.length > 0) normalized.supportEfforts = m.supportEfforts;
       if (m.defaultEffort) normalized.defaultEffort = m.defaultEffort;
+      // `extraConfig` carries the per-model TOML keys this app does not model
+      // (protocol, adaptive_thinking, off_effort, beta_api, ...). The backend
+      // round-trips the bag, so rebuilding a row without it would delete those
+      // keys from the DB on any catalog edit.
+      if (m.extraConfig && typeof m.extraConfig === 'object') {
+        normalized.extraConfig = m.extraConfig;
+      }
 
       return normalized;
     })

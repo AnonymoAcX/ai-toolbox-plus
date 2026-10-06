@@ -16,11 +16,32 @@ export interface KimiCatalogModel {
   model: string;
   provider: string;
   displayName?: string;
+  /** `max_context_size` — required by the CLI to be a positive integer. */
   maxContextSize?: number;
+  /** `max_input_size` — optional, must be a positive integer when present. */
+  maxInputSize?: number;
+  /** `max_output_size` — optional, must be a positive integer when present. */
+  maxOutputSize?: number;
+  /** `reasoning_key` — the response field carrying reasoning content. */
+  reasoningKey?: string;
   capabilities?: string[];
   supportEfforts?: string[];
   defaultEffort?: string;
   [key: string]: unknown;
+}
+
+/** One catalog model from the bundled models.dev data (`get_kimi_preset_models`). */
+export interface KimiPresetModel {
+  id: string;
+  displayName?: string;
+  maxContextSize?: number;
+  maxInputSize?: number;
+  maxOutputSize?: number;
+  reasoning: boolean;
+  /** The catalog's tool-support flag; gates the `tool_use` capability. */
+  toolCall: boolean;
+  inputModalities: string[];
+  outputModalities: string[];
 }
 
 export interface KimiProviderConfig {
